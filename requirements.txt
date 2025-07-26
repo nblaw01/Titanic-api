@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+matplotlib
+seaborn
+scikit-learn
+pandas
+numpy
+httpx  # optional for making HTTP requests in tests
