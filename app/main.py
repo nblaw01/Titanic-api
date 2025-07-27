@@ -20,7 +20,7 @@ except Exception as e:
 # Define the expected input schema
 class PassengerData(BaseModel):
     Pclass: int
-    Sex: int  # 0 for male, 1 for female
+    Sex: int  # 0 = male, 1 = female
     Age: float
     Fare: float
 
@@ -47,16 +47,21 @@ def predict(data: PassengerData):
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
 
 @app.post("/predict-batch")
-def predict_batch(data: List[PassengerData]):
+def predict_batch(payload: dict):
     try:
-        input_df = pd.DataFrame([d.dict() for d in data], columns=features)
+        passengers = payload.get("passengers")
+        if not isinstance(passengers, list):
+            raise HTTPException(status_code=422, detail="Missing or invalid 'passengers' list.")
+
+        input_data = [PassengerData(**p) for p in passengers]
+        input_df = pd.DataFrame([p.dict() for p in input_data], columns=features)
         probs = model.predict_proba(input_df)[:, 1]
         predictions = (probs >= threshold).astype(int)
 
         results = []
-        for i in range(len(data)):
+        for i in range(len(input_data)):
             results.append({
-                "input": data[i].dict(),
+                "input": input_data[i].dict(),
                 "prediction": int(predictions[i]),
                 "probability": round(probs[i], 3)
             })
