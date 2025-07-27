@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List
 import pickle
 import pandas as pd
 import os
@@ -16,7 +17,7 @@ try:
 except Exception as e:
     raise RuntimeError(f"Failed to load model bundle: {e}")
 
-# Define the expected input schema using Pydantic
+# Define the expected input schema
 class PassengerData(BaseModel):
     Pclass: int
     Sex: int  # 0 for male, 1 for female
@@ -33,8 +34,6 @@ def read_root():
 def predict(data: PassengerData):
     try:
         input_df = pd.DataFrame([data.dict()], columns=features)
-
-        # Predict the probability and apply the threshold
         prob = model.predict_proba(input_df)[:, 1][0]
         prediction = int(prob >= threshold)
 
@@ -46,3 +45,26 @@ def predict(data: PassengerData):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+
+@app.post("/predict-batch")
+def predict_batch(data: List[PassengerData]):
+    try:
+        input_df = pd.DataFrame([d.dict() for d in data], columns=features)
+        probs = model.predict_proba(input_df)[:, 1]
+        predictions = (probs >= threshold).astype(int)
+
+        results = []
+        for i in range(len(data)):
+            results.append({
+                "input": data[i].dict(),
+                "prediction": int(predictions[i]),
+                "probability": round(probs[i], 3)
+            })
+
+        return {
+            "results": results,
+            "threshold_used": threshold
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch prediction failed: {e}")
