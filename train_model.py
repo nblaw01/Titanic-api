@@ -112,7 +112,7 @@ y_pred_ensemble = (y_probs_ensemble >= threshold).astype(int)
 y_pred_rf = (y_probs_rf >= threshold).astype(int)
 
 # --------------------------- Compare Performance --------------------------- #
-print("\n--- Model Comparison at Threshold = 0.53 ---")
+print("\n--- Model Comparison ---")
 
 print("\nRandom Forest:")
 print(classification_report(y_test, y_pred_rf))
