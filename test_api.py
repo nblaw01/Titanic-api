@@ -1,8 +1,8 @@
 import json
 import requests
 
-# 👇 Replace this with your live Railway URL
-url = "https://titanic-api-production.up.railway.app/predict"
+# Batch endpoint
+url = "http://127.0.0.1:8000/predict-batch"
 
 # Load input data from JSON file
 with open("app/input.json") as f:

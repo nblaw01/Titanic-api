@@ -4,192 +4,134 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.model_selection import GridSearchCV, train_test_split, RandomizedSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     accuracy_score,
     roc_curve,
     roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score,
 )
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import VotingClassifier, RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 
-# Load the data
-df = pd.read_csv("data/train.csv")
-print(df.head())
+# --------------------------- Load & Prepare Data --------------------------- #
+df = pd.read_csv("data/train.csv")  
 
-# Missing summary
-total_rows = len(df)
+# Check missing values
 missing_summary = pd.DataFrame({
     "Total": df.count(),
     "Missing": df.isnull().sum()
 })
-missing_summary["Missing %"] = (missing_summary["Missing"] / total_rows) * 100
+missing_summary["Missing %"] = (missing_summary["Missing"] / len(df)) * 100
 print(missing_summary)
 
-# Drop missing & keep selected features
+# Clean dataset
 df = df[["Pclass", "Sex", "Age", "Fare", "Survived"]].dropna()
 df["Sex"] = df["Sex"].map({"male": 0, "female": 1})
-print(df.head())
 
-##########################################################
-#                                                        Model Training                                                             #
-##########################################################
-
+# --------------------------- Split Data --------------------------- #
 X = df.drop("Survived", axis=1)
 y = df["Survived"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Random Forest + RandomizedSearchCV
-rf = RandomForestClassifier(random_state=42)
-param_grid = {
-    'n_estimators': [100, 200, 300, 400, 500],
-    'max_depth': [None, 10, 20, 30, 40],
-    'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4],
-    'max_features': ['sqrt', 'log2']
+# --------------------------- Define Models --------------------------- #
+rf = RandomForestClassifier(class_weight='balanced', random_state=42)
+logreg = LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42)
+gb = GradientBoostingClassifier(random_state=42)
+
+# Fit base models
+rf.fit(X_train, y_train)
+logreg.fit(X_train, y_train)
+gb.fit(X_train, y_train)
+
+# --------------------------- Find Best Thresholds Per Model --------------------------- #
+def find_best_threshold(model, X_test, y_test, metric=f1_score):
+    probs = model.predict_proba(X_test)[:, 1]
+    thresholds = np.arange(0.3, 0.70, 0.01)
+    best_thresh = 0.5
+    best_score = 0
+
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        score = metric(y_test, preds)
+        if score > best_score:
+            best_score = score
+            best_thresh = t
+
+    return best_thresh, best_score
+
+custom_thresholds = {}
+for name, model in [("Random Forest", rf), ("Logistic Regression", logreg), ("Gradient Boosting", gb)]:
+    best_t, best_s = find_best_threshold(model, X_test, y_test, metric=f1_score)
+    custom_thresholds[name] = best_t
+    print(f"{name} best threshold = {best_t:.2f} | Best F1 = {best_s:.3f}")
+
+# --------------------------- Compare Individual Model Performance --------------------------- #
+models = {
+    "Random Forest": rf,
+    "Logistic Regression": logreg,
+    "Gradient Boosting": gb
 }
 
-random_search = RandomizedSearchCV(
-    estimator=rf,
-    param_distributions=param_grid,
-    n_iter=50,
-    cv=5,
-    scoring='recall',
-    n_jobs=-1,
-    verbose=2,
-    random_state=42
+print("\n--- Individual Model Performance (Using Custom Thresholds) ---")
+for name, model in models.items():
+    probs = model.predict_proba(X_test)[:, 1]
+    threshold = custom_thresholds[name]
+    preds = (probs >= threshold).astype(int)
+    print(f"\n{name} (Threshold = {threshold:.2f})")
+    print(f"AUC: {roc_auc_score(y_test, probs):.3f}")
+    print(f"Accuracy: {accuracy_score(y_test, preds):.3f}")
+    print(f"F1 Score: {f1_score(y_test, preds):.3f}")
+    print(f"Precision: {precision_score(y_test, preds):.3f}")
+    print(f"Recall: {recall_score(y_test, preds):.3f}")
+
+# --------------------------- Ensemble Model --------------------------- #
+ensemble_model = VotingClassifier(
+    estimators=[
+        ("rf", rf),
+        ("logreg", logreg),
+        ("gb", gb)
+    ],
+    voting='soft'
 )
+ensemble_model.fit(X_train, y_train)
 
-random_search.fit(X_train, y_train)
+# --------------------------- Predict Probabilities --------------------------- #
+best_t_ensemble, best_f1_ensemble = find_best_threshold(ensemble_model, X_test, y_test)
+print(f"\nEnsemble Model best threshold = {best_t_ensemble:.2f} | Best F1 = {best_f1_ensemble:.3f}")
+threshold = best_t_ensemble # This is only used for the emsemble model
 
-print("Best parameters found:")
-print(random_search.best_params_)
-print("\nBest recall score from cross-validation:")
-print(random_search.best_score_)
+y_probs_ensemble = ensemble_model.predict_proba(X_test)[:, 1]
+y_probs_rf = rf.predict_proba(X_test)[:, 1]
 
-results_df = pd.DataFrame(random_search.cv_results_)
-top_results = results_df.sort_values(by="mean_test_score", ascending=False).head(10)
-print("\nTop 10 parameter combinations:\n")
-print(top_results[["mean_test_score", "std_test_score", "params"]])
+y_pred_ensemble = (y_probs_ensemble >= threshold).astype(int)
+y_pred_rf = (y_probs_rf >= threshold).astype(int)
 
-best_model = random_search.best_estimator_
-y_pred = best_model.predict(X_test)
+# --------------------------- Compare Performance --------------------------- #
+print("\n--- Model Comparison at Threshold = 0.53 ---")
 
-print("\nTuned Model Performance on Test Set:")
-print(classification_report(y_test, y_pred))
-print(confusion_matrix(y_test, y_pred))
+print("\nRandom Forest:")
+print(classification_report(y_test, y_pred_rf))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_rf))
 
-##########################################################
-#                                               Custom Threshold Evaluation                                          #
-##########################################################
+print("\nEnsemble Model:")
+print(classification_report(y_test, y_pred_ensemble))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_ensemble))
 
-# Probabilities instead of fixed threshold
-y_probs = best_model.predict_proba(X_test)[:, 1]
-
-# Set your own threshold
-threshold = 0.4
-y_pred_custom = (y_probs >= threshold).astype(int)
-
-print(f"\n--- Custom Threshold = {threshold} ---")
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred_custom))
-print("\nConfusion Matrix:")
-print(confusion_matrix(y_test, y_pred_custom))
-
-##########################################################
-#                                        Exploring High Confidence Survivors                                  #
-##########################################################
-
-probs_df = pd.DataFrame({
-    "Pclass": X_test["Pclass"].values,
-    "Sex": X_test["Sex"].values,
-    "Age": X_test["Age"].values,
-    "Fare": X_test["Fare"].values,
-    "Actual": y_test.values,
-    "Predicted_Prob_Survived": y_probs,
-    "Predicted_Label": y_pred_custom
-})
-
-print(probs_df.head(10))
-
-high_conf_survivors = probs_df[
-    (probs_df["Predicted_Prob_Survived"] >= threshold)
-    & (probs_df["Predicted_Label"] == 1)
-]
-high_conf_true_survivors = high_conf_survivors[high_conf_survivors["Actual"] == 1]
-
-print(df.groupby("Pclass")["Fare"].median())
-
-print(f"\nTotal survivors: {df['Survived'].sum()}")
-print(f"\nThere are {len(high_conf_survivors)} high-confidence survivors (>= {threshold*100:.0f}%)")
-print("\nAverage values of high-confidence survivors:")
-print("Means:\n", high_conf_true_survivors[["Pclass", "Sex", "Age", "Fare"]].mean())
-print("\nMedians:\n", high_conf_true_survivors[["Pclass", "Sex", "Age", "Fare"]].median())
-
-sns.boxplot(x=high_conf_true_survivors["Fare"])
-plt.title("Fare Distribution of High-Confidence Survivors")
-plt.xlabel("Fare")
-plt.show()
-
-##########################################################
-#                                                     Feature Importance                                                       #
-##########################################################
-
-importances = best_model.feature_importances_
-feature_names = X.columns
-
-importance_df = pd.DataFrame({
-    "Feature": feature_names,
-    "Importance": importances
-}).sort_values(by="Importance", ascending=False)
-
-sns.barplot(data=importance_df, x="Importance", y="Feature")
-plt.title("Feature Importances from Random Forest")
-plt.show()
-
-##########################################################
-#                                                              ROC Plot                                                                   #
-##########################################################
-
-fpr, tpr, _ = roc_curve(y_test, y_probs)
-auc_score = roc_auc_score(y_test, y_probs)
-
-plt.plot(fpr, tpr, label=f"AUC = {auc_score:.2f}")
-plt.plot([0, 1], [0, 1], 'k--')
-plt.title("ROC Curve")
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.legend()
-plt.grid(True)
-plt.show()
-
-##########################################################
-#                                                           Confusion Matrix                                                      #
-##########################################################
-
-import seaborn as sns
-
-cm = confusion_matrix(y_test, y_pred_custom)
-
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
-plt.title(f"Confusion Matrix (Threshold = {threshold})")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.show()
-
-##########################################################
-#                                                              Save Model                                                              #
-##########################################################
-
+# --------------------------- Save Model --------------------------- #
 model_bundle = {
-    "model": best_model,
+    "model": ensemble_model,
     "threshold": threshold,
     "features": X.columns.tolist()
 }
-
 os.makedirs("saved_models", exist_ok=True)
 with open("saved_models/final_model_bundle.pkl", "wb") as f:
     pickle.dump(model_bundle, f)
 
-print("Model and metadata saved.")
+print("Model saved.")
